@@ -1,0 +1,62 @@
+name: Sync upstream -> build kp -> push (EdgeOne auto-deploy)
+
+# B 方案：你的 fork 保持与作者一致，本工作流每周同步上游，
+# 并把 kp 知识点页生成后提交到 fork 的 main 分支。
+# EdgeOne 关联这个 fork 的 main，收到 push 就自动部署。
+on:
+  schedule:
+    # 每周一北京时间 09:00（= UTC 01:00）
+    - cron: '0 1 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 需要把同步结果和生成的 kp 页 push 回 fork
+
+concurrency:
+  group: cn-math-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 添加上游仓库并抓取
+        run: |
+          git remote add upstream https://github.com/xiaoyang111222/cn-math-taxonomy.git 2>/dev/null || true
+          git fetch upstream main
+          echo "upstream sha: $(git rev-parse upstream/main)"
+
+      - name: 同步上游 main 到 fork（快进优先，必要时三方合并）
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          BASE=$(git merge-base HEAD upstream/main)
+          if [ "$BASE" = "$(git rev-parse HEAD)" ]; then
+            git merge --ff-only upstream/main
+            echo "快进同步完成"
+          else
+            git merge --no-edit upstream/main
+            echo "三方合并完成（你的 fork 有额外提交：kp 页）"
+          fi
+
+      - name: 生成 kp 静态页到 fork 根目录
+        run: |
+          node scripts/gen-kp-pages.mjs --out .
+          echo "已生成 kp/、sitemap.xml、robots.txt（若根目录已存在则沿用）"
+
+      - name: 提交同步结果并 push（触发 EdgeOne 自动部署）
+        run: |
+          git add -A
+          if git diff --cached --quiet; then
+            echo "无变化，跳过提交与部署"
+          else
+            git commit -m "chore: sync upstream + regen kp pages [skip ci]"
+            git push origin HEAD:main
+            echo "已 push，EdgeOne 将自动构建部署"
+          fi
